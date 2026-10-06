@@ -42,14 +42,40 @@ curl http://127.0.0.1:8000/health
 - `GET /health`
 - `POST /api/scans` with `{ "name": "New room" }` → `{ "scanId", "status": "created" }`
 - `POST /api/scans/{scanId}/photos` multipart field `files` (jpg, jpeg, png)
-- `POST /api/scans/{scanId}/process` → `{ "scanId", "status": "processing" }`
+- `POST /scan/video` multipart field `file` (mp4, mov, m4v). Optional form fields `scanId` and `name`.
+- `POST /api/scans/{scanId}/process` → starts photo reconstruction, or requeues a video scan
 - `GET /api/scans/{scanId}` polling payload used by the app
+- `GET /scan/{scanId}/status` job status (`UPLOADING`, `EXTRACTING_FRAMES`, `RECONSTRUCTING`, `GENERATING_MESH`, `EXPORTING_GLB`, `COMPLETED`, `FAILED`)
 - `GET /api/scans` history
 - `PATCH /api/scans/{scanId}` rename
-- `GET /api/scans/{scanId}/model` the GLB
-- `GET /api/scans/{scanId}/thumbnail` the first photo
+- `GET /api/scans/{scanId}/model` and `GET /scan/{scanId}/model` the GLB
+- `GET /scan/{scanId}/preview` a representative extracted frame
+- `GET /api/scans/{scanId}/thumbnail` the first photo or extracted frame
 
 `modelUrl` in scan responses is an absolute URL built from the request host, so a phone on the same Wi-Fi can download the file.
+
+## Video scans
+
+Upload an MP4, MOV, or M4V walkthrough. The API stores it at `storage/scans/{scanId}/original/`, extracts frames with FFmpeg (default 3 fps), drops blurry and duplicate frames, and keeps about 150–300 images in `storage/scans/{scanId}/images/`.
+
+Frame extraction uses FFmpeg on the host when it is installed, and otherwise runs FFmpeg through Docker Desktop.
+
+Reconstruction uses Docker Desktop by default. The API starts `yeicor/colmap-openmvs:cuda-latest` with `--gpus all` and mounts the scan directory at `/scan`. COLMAP and OpenMVS run inside that container. The existing `reconstruct_points` and `mesh_from_points` functions stay in place for `RECONSTRUCTION_BACKEND=local`. After the container finishes, the API writes `output/room.glb`, `output/room.obj`, and `output/room.ply`.
+
+```
+storage/scans/{scanId}/
+  original/video.mp4
+  images/frame_0001.jpg
+  colmap/
+  openmvs/
+  output/room.glb
+```
+
+Scan records stay in `storage/scans/{scanId}.json` and are mirrored to `storage/roomscan.db` (`app/schema.sql`).
+
+Start Docker Desktop, then start this API with `python run.py`. A video scan calls Docker directly. A 60–90 second 1080p walkthrough is the intended input.
+
+`docker compose up --build` is only needed when the API itself should run in a container. Set `SCANS_HOST_PATH` to the host path of `storage/scans` in that case.
 
 ## Phone
 

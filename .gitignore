@@ -6,3 +6,5 @@ storage/uploads/
 storage/processing/
 storage/models/
 storage/scans/
+storage/roomscan.db
+storage/*.db

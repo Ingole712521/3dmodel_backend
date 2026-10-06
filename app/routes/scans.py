@@ -13,6 +13,7 @@ from app.schemas import (
     ScanResponse,
 )
 from app.services.colmap import ReconstructionError
+from app.services.queue import enqueue_video
 from app.services.reconstruction import image_files, start_reconstruction
 from app.services.storage import ScanStore
 from app.utils.files import validate_image
@@ -36,19 +37,27 @@ def _public(record: dict, base_url: str) -> ScanResponse:
     model_url = f"{base_url}/api/scans/{scan_id}/model" if record.get("hasModel") else None
     thumbnail_url = None
     photos = record.get("photos") or []
-    if photos:
+    if photos or record.get("usableFrameCount") or record.get("photoCount"):
         thumbnail_url = f"{base_url}/api/scans/{scan_id}/thumbnail"
+    preview_url = f"{base_url}/scan/{scan_id}/preview" if record.get("usableFrameCount") else None
     return ScanResponse(
         id=scan_id,
         name=record["name"],
         photos=[],
         photoCount=int(record.get("photoCount") or 0),
         status=record["status"],
+        source=record.get("source") or "photos",
+        jobStatus=record.get("jobStatus"),
+        frameCount=record.get("frameCount"),
+        usableFrameCount=record.get("usableFrameCount"),
+        durationSeconds=record.get("durationSeconds"),
+        warning=record.get("warning"),
         progress=record.get("progress"),
         processingStage=record.get("processingStage"),
         estimatedSecondsRemaining=record.get("estimatedSecondsRemaining"),
         modelUrl=model_url,
         thumbnailUrl=thumbnail_url,
+        previewUrl=preview_url,
         createdAt=record["createdAt"],
         completedAt=record.get("completedAt"),
         errorMessage=record.get("errorMessage"),
@@ -137,10 +146,13 @@ def process_scan(scan_id: str, request: Request) -> ProcessScanResponse:
     parsed = _parse_id(scan_id)
     record = _require(request, parsed)
     images = image_files(_store(request).upload_dir(parsed))
-    if len(images) != int(record.get("photoCount") or 0):
+    if len(images) != int(record.get("photoCount") or 0) and record.get("source") != "video":
         _store(request).update(parsed, photoCount=len(images))
     try:
-        started = start_reconstruction(_store(request), parsed)
+        if record.get("source") == "video":
+            started = enqueue_video(_store(request), parsed)
+        else:
+            started = start_reconstruction(_store(request), parsed)
     except ReconstructionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
@@ -152,7 +164,9 @@ def process_scan(scan_id: str, request: Request) -> ProcessScanResponse:
 def download_model(scan_id: str, request: Request) -> FileResponse:
     parsed = _parse_id(scan_id)
     record = _require(request, parsed)
-    path = _store(request).model_path(parsed)
+    path = _store(request).output_glb(parsed)
+    if not path.exists():
+        path = _store(request).model_path(parsed)
     if not record.get("hasModel") or not path.exists():
         raise HTTPException(status_code=404, detail="This scan does not have a reconstructed model yet.")
     return FileResponse(path, media_type="model/gltf-binary", filename=f"{parsed}.glb")
@@ -163,6 +177,9 @@ def download_thumbnail(scan_id: str, request: Request) -> FileResponse:
     parsed = _parse_id(scan_id)
     _require(request, parsed)
     images = image_files(_store(request).upload_dir(parsed))
+    frames = _store(request).frames_path(parsed)
+    if not images and frames.exists():
+        images = image_files(frames)
     if not images:
         raise HTTPException(status_code=404, detail="This scan does not have a thumbnail.")
     media = "image/png" if images[0].suffix.lower() == ".png" else "image/jpeg"

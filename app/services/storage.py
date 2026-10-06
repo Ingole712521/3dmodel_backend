@@ -4,7 +4,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from app.config import STORAGE
+from app.config import ACTIVE_JOBS, STORAGE
+from app.db import ScanDatabase
 from app.models import new_record
 
 
@@ -19,6 +20,8 @@ class ScanStore:
             path.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._jobs: set[str] = set()
+        self.db = ScanDatabase(root / "roomscan.db")
+        self.db.replace_all(self.list_scans())
 
     def create(self, scan_id: str, name: str) -> dict[str, Any]:
         record = new_record(scan_id, name)
@@ -49,8 +52,10 @@ class ScanStore:
         with self._lock:
             for path in self.records.glob("*.json"):
                 record = json.loads(path.read_text(encoding="utf-8"))
-                if record.get("status") == "processing":
+                active = record.get("status") == "processing" or record.get("jobStatus") in ACTIVE_JOBS
+                if active and record.get("status") != "completed":
                     record["status"] = "failed"
+                    record["jobStatus"] = "FAILED"
                     record["errorMessage"] = "Reconstruction was interrupted. Try again."
                     record["estimatedSecondsRemaining"] = 0
                     self._write(record)
@@ -82,6 +87,21 @@ class ScanStore:
         with self._lock:
             self._jobs.discard(scan_id)
 
+    def is_running(self, scan_id: str) -> bool:
+        with self._lock:
+            return scan_id in self._jobs
+
+    def begin_video_job(self, scan_id: str) -> dict[str, Any] | None:
+        """Reserve a video job without changing the photo reconstruction lock rules."""
+        with self._lock:
+            if scan_id in self._jobs:
+                return None
+            record = self._require(scan_id)
+            if record.get("hasModel") and record.get("status") == "completed":
+                return None
+            self._jobs.add(scan_id)
+            return record
+
     def upload_dir(self, scan_id: str) -> Path:
         path = self.uploads / scan_id
         path.mkdir(parents=True, exist_ok=True)
@@ -104,6 +124,49 @@ class ScanStore:
     def model_path(self, scan_id: str) -> Path:
         return self.models / f"{scan_id}.glb"
 
+    def workspace(self, scan_id: str) -> Path:
+        path = self.records / scan_id
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def original_dir(self, scan_id: str) -> Path:
+        path = self.workspace(scan_id) / "original"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def images_dir(self, scan_id: str) -> Path:
+        path = self.workspace(scan_id) / "images"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def frames_path(self, scan_id: str) -> Path:
+        return self.records / scan_id / "images"
+
+    def colmap_dir(self, scan_id: str) -> Path:
+        path = self.workspace(scan_id) / "colmap"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def openmvs_dir(self, scan_id: str) -> Path:
+        path = self.workspace(scan_id) / "openmvs"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def output_dir(self, scan_id: str) -> Path:
+        path = self.workspace(scan_id) / "output"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def output_glb(self, scan_id: str) -> Path:
+        return self.records / scan_id / "output" / "room.glb"
+
+    def host_workspace(self, scan_id: str) -> Path:
+        from app.config import SCANS_HOST_PATH
+
+        if SCANS_HOST_PATH:
+            return Path(SCANS_HOST_PATH) / scan_id
+        return self.workspace(scan_id)
+
     def clear_model(self, scan_id: str) -> None:
         path = self.model_path(scan_id)
         if path.exists():
@@ -124,3 +187,4 @@ class ScanStore:
     def _write(self, record: dict[str, Any]) -> None:
         path = self.records / f"{record['id']}.json"
         path.write_text(json.dumps(record), encoding="utf-8")
+        self.db.upsert(record)
