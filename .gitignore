@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+storage/uploads/
+storage/processing/
+storage/models/
+storage/scans/
