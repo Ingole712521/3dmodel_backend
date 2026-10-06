@@ -1,3 +1,5 @@
+import json
+import re
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -21,6 +23,7 @@ from app.services.storage import ScanStore
 from app.utils.files import is_video_container, video_extension
 
 router = APIRouter()
+_NODE_ID = re.compile(r"^n\d{4}$")
 
 
 def _store(request: Request) -> ScanStore:
@@ -166,6 +169,37 @@ def video_model(scan_id: str, request: Request) -> FileResponse:
     if not record.get("hasModel") or not path.exists():
         raise HTTPException(status_code=404, detail="This scan does not have a reconstructed model yet.")
     return FileResponse(path, media_type="model/gltf-binary", filename="room.glb")
+
+
+@router.get("/scan/{scan_id}/tour")
+def video_tour(scan_id: str, request: Request) -> dict:
+    parsed = _parse_id(scan_id)
+    record = _require(request, parsed)
+    path = _store(request).output_dir(parsed) / "tour.json"
+    if not record.get("hasModel") or not path.exists():
+        raise HTTPException(status_code=404, detail="This scan does not have a tour yet.")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=404, detail="This scan does not have a tour yet.") from exc
+    base = _base(request)
+    for node in payload.get("nodes") or []:
+        node_id = node.get("id")
+        if isinstance(node_id, str):
+            node["imageUrl"] = f"{base}/scan/{parsed}/nodes/{node_id}"
+    return payload
+
+
+@router.get("/scan/{scan_id}/nodes/{node_id}")
+def video_node(scan_id: str, node_id: str, request: Request) -> FileResponse:
+    parsed = _parse_id(scan_id)
+    _require(request, parsed)
+    if not _NODE_ID.fullmatch(node_id):
+        raise HTTPException(status_code=404, detail="This viewpoint could not be found.")
+    path = _store(request).output_dir(parsed) / "nodes" / f"{node_id}.jpg"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="This viewpoint could not be found.")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @router.get("/scan/{scan_id}/preview")

@@ -23,11 +23,19 @@ TARGET_MAX_FRAMES = int(os.environ.get("TARGET_MAX_FRAMES", "300"))
 BLUR_VARIANCE_MIN = float(os.environ.get("BLUR_VARIANCE_MIN", "60"))
 DUPLICATE_SIMILARITY = float(os.environ.get("DUPLICATE_SIMILARITY", "0.985"))
 
+# Viewpoints for the virtual tour. A new node is kept when the view changes,
+# or when the walker has stayed on one view for KEYFRAME_MAX_GAP frames.
+KEYFRAME_SIMILARITY = float(os.environ.get("KEYFRAME_SIMILARITY", "0.78"))
+KEYFRAME_MAX_GAP = int(os.environ.get("KEYFRAME_MAX_GAP", "12"))
+TOUR_MIN_NODES = int(os.environ.get("TOUR_MIN_NODES", "4"))
+TOUR_MAX_NODES = int(os.environ.get("TOUR_MAX_NODES", "40"))
+LOOP_SIMILARITY = float(os.environ.get("LOOP_SIMILARITY", "0.86"))
+
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.environ.get("FFPROBE_BIN", "ffprobe")
 
-# docker is the default: Docker Desktop runs yeicor/colmap-openmvs with the GPU.
-# Set RECONSTRUCTION_BACKEND=local to use the in-process COLMAP + Open3D functions instead.
+# Video scans build a virtual tour and do not use these containers.
+# They remain available for the older photo reconstruction tools.
 RECONSTRUCTION_BACKEND = os.environ.get("RECONSTRUCTION_BACKEND", "docker").strip().lower()
 COLMAP_DOCKER_IMAGE = os.environ.get("COLMAP_DOCKER_IMAGE", "yeicor/colmap-openmvs:cuda-latest")
 FFMPEG_IMAGE = os.environ.get("FFMPEG_IMAGE", "mwader/static-ffmpeg:latest")

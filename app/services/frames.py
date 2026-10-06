@@ -1,4 +1,4 @@
-"""Drop blurry, duplicate, and undecodable frames before COLMAP sees them."""
+"""Drop blurry, duplicate, and undecodable frames before keyframe selection."""
 
 import shutil
 from dataclasses import dataclass

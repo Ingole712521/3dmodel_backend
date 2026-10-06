@@ -1,4 +1,4 @@
-"""Video jobs stop at a folder of frames, then call the existing reconstruction functions."""
+"""Video jobs extract frames, then build a virtual tour instead of a mesh."""
 
 import shutil
 from pathlib import Path
@@ -12,18 +12,15 @@ from app.config import (
     JOB_MESH,
     JOB_RECONSTRUCTING,
     MIN_PHOTOS,
-    RECONSTRUCTION_BACKEND,
     TARGET_MIN_FRAMES,
 )
 from app.models import utc_now
-from app.services.colmap import ReconstructionError, reconstruct_points
-from app.services.docker_reconstruct import run_colmap_openmvs
-from app.services.export import publish_docker, publish_local
+from app.services.colmap import ReconstructionError
 from app.services.ffmpeg import extract_frames, probe_duration
 from app.services.frames import filter_frames, refresh_valid_frames, validate_frames
-from app.services.mesh import mesh_from_points
-from app.services.reconstruction_log import append_log, load_status, mesh_ply, output_glb, save_status, write_file_manifest
+from app.services.reconstruction_log import append_log, load_status, save_status, write_file_manifest
 from app.services.storage import ScanStore
+from app.services.tour import build_tour
 
 _STAGE_FOR_JOB = {
     JOB_EXTRACTING: ("extracting", 18, 640),
@@ -43,7 +40,7 @@ def run_video_job(store: ScanStore, scan_id: str) -> None:
     except ReconstructionError as exc:
         _fail(store, scan_id, str(exc))
     except Exception as exc:
-        _fail(store, scan_id, f"Reconstruction failed: {exc}")
+        _fail(store, scan_id, f"The virtual tour could not be created: {exc}")
     finally:
         store.finish_job(scan_id)
 
@@ -75,39 +72,11 @@ def _execute(store: ScanStore, scan_id: str) -> None:
 
     store.clear_model(scan_id)
     output = _fresh(store.output_dir(scan_id))
-    if RECONSTRUCTION_BACKEND == "docker":
-        _set_job(store, scan_id, JOB_RECONSTRUCTING)
-        _fresh(store.colmap_dir(scan_id))
-        _fresh(store.openmvs_dir(scan_id))
-        scan_dir = store.host_workspace(scan_id)
-        run_colmap_openmvs(scan_dir)
-        _set_job(store, scan_id, JOB_MESH)
-        _set_job(store, scan_id, JOB_EXPORTING)
-        try:
-            publish_docker(output, store.model_path(scan_id))
-        except ReconstructionError:
-            _record_export(scan_dir, False)
-            raise
-        except Exception as exc:
-            append_log(scan_dir, f"GLB export exception: {type(exc).__name__}: {exc}")
-            _record_export(scan_dir, False)
-            raise ReconstructionError("Reconstruction succeeded. GLB export failed.") from exc
-        _record_export(scan_dir, True)
-    else:
-        _set_job(store, scan_id, JOB_RECONSTRUCTING)
-        work = _fresh(store.colmap_dir(scan_id))
-        ply_path = reconstruct_points(images, work, lambda stage: _on_colmap(store, scan_id, stage))
-        _set_job(store, scan_id, JOB_MESH)
-        room_glb = output / "room.glb"
-        mesh_from_points(ply_path, room_glb)
-        _set_job(store, scan_id, JOB_EXPORTING)
-        publish_local(ply_path, room_glb, output, store.model_path(scan_id))
-
-    model = store.model_path(scan_id)
-    if not model.exists() or model.stat().st_size < 32:
-        if RECONSTRUCTION_BACKEND == "docker" and mesh_ply(store.host_workspace(scan_id)) is not None:
-            raise ReconstructionError("Reconstruction succeeded. GLB export failed.")
-        raise ReconstructionError("The mesh export did not produce a GLB file.")
+    scan_dir = store.host_workspace(scan_id)
+    build_tour(images, output, scan_dir, lambda stage: _on_tour(store, scan_id, stage))
+    tour_path = output / "tour.json"
+    if not tour_path.exists() or tour_path.stat().st_size < 32:
+        raise ReconstructionError("The tour export did not produce a tour.json file.")
     store.update(
         scan_id,
         status="completed",
@@ -121,17 +90,14 @@ def _execute(store: ScanStore, scan_id: str) -> None:
     )
 
 
-def _on_colmap(store: ScanStore, scan_id: str, stage: str) -> None:
-    progress = {"analyzing": 40, "cameras": 55, "point-cloud": 68}.get(stage, 46)
-    store.update(
-        scan_id,
-        status="processing",
-        jobStatus=JOB_RECONSTRUCTING,
-        processingStage="reconstructing",
-        progress=progress,
-        estimatedSecondsRemaining=max(60, 480 - progress),
-        errorMessage=None,
-    )
+def _on_tour(store: ScanStore, scan_id: str, stage: str) -> None:
+    job_status = {
+        "keyframes": JOB_RECONSTRUCTING,
+        "nodes": JOB_MESH,
+        "graph": JOB_EXPORTING,
+        "tour": JOB_EXPORTING,
+    }.get(stage, JOB_RECONSTRUCTING)
+    _set_job(store, scan_id, job_status)
 
 
 def _set_job(store: ScanStore, scan_id: str, job_status: str) -> None:
@@ -145,14 +111,6 @@ def _set_job(store: ScanStore, scan_id: str, job_status: str) -> None:
         estimatedSecondsRemaining=remaining,
         errorMessage=None,
     )
-
-
-def _record_export(scan_dir: Path, exported: bool) -> None:
-    status = load_status(scan_dir)
-    status["glb_export"] = exported and output_glb(scan_dir) is not None
-    status["output_files"] = write_file_manifest(scan_dir)
-    save_status(scan_dir, status)
-    append_log(scan_dir, f"===== glb_export {'OK' if status['glb_export'] else 'FAILED'} =====")
 
 
 def _fail(store: ScanStore, scan_id: str, message: str) -> None:

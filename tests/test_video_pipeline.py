@@ -116,6 +116,35 @@ class FrameValidationTests(unittest.TestCase):
             self.assertEqual(str(caught.exception), "Corrupted frame detected: frame_0101.jpg")
 
 
+class TourTests(unittest.TestCase):
+    def test_writes_nodes_links_and_tour_json(self) -> None:
+        from app.services.tour import build_tour
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            images = root / "images"
+            output = root / "output"
+            images.mkdir()
+            output.mkdir()
+            for index, seed in enumerate((1, 1, 1, 4, 4, 8, 8, 8, 12), start=1):
+                _write_noise(images / f"frame_{index:04d}.jpg", seed=seed)
+
+            document = build_tour(images, output, root)
+
+            self.assertEqual(document["kind"], "virtual-tour")
+            self.assertEqual(document["startNodeId"], "n0001")
+            self.assertGreaterEqual(document["nodeCount"], 3)
+            self.assertLessEqual(document["nodeCount"], 9)
+            self.assertTrue((output / "tour.json").is_file())
+            first = document["nodes"][0]
+            self.assertTrue((output / first["image"]).is_file())
+            self.assertTrue(any(link["relation"] == "next" for link in first["links"]))
+            second = document["nodes"][1]
+            self.assertTrue(any(link["direction"] == "back" and link["relation"] == "previous" for link in second["links"]))
+            self.assertIn("position", first)
+            self.assertEqual(first["position"]["y"], 0.0)
+
+
 class ExportTests(unittest.TestCase):
     def test_glb_obj_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
